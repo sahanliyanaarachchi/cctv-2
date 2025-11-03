@@ -70,8 +70,9 @@ async function startCamera() {
   }
 }
 
-// Capture detected human face
+// Capture detected human face only
 function captureFace(pred) {
+  if(pred.class !== "person") return; // capture only human
   const now = Date.now();
   if (now - lastCaptureTime < 2000) return; // limit every 2s
   lastCaptureTime = now;
