@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Human Detection + Drive Upload</title>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.0/firebase-app.js";
+import { getDatabase, ref, set } from "https://www.gstatic.com/firebasejs/10.14.0/firebase-database.js";
+import { getStorage, ref as sRef, uploadString, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.14.0/firebase-storage.js";
+
+// Firebase config
+const firebaseConfig = {
+  apiKey: "AIzaSyAASopq67qBAg2IoB7lfFsAbAFvfsbSwJA",
+  authDomain: "human-detect-19f4f.firebaseapp.com",
+  databaseURL: "https://human-detect-19f4f-default-rtdb.firebaseio.com",
+  projectId: "human-detect-19f4f",
+  storageBucket: "human-detect-19f4f.appspot.com",
+  messagingSenderId: "281262323303",
+  appId: "1:281262323303:web:6fd0d706a4076d9cff06c2"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+const storage = getStorage(app);
+
+// Google Drive Apps Script Web App
+const DRIVE_UPLOAD_URL = "https://script.google.com/macros/s/AKfycbwqTvDj9j_K2YI_VAJTKrmgFhXvGs-oS7LOm7T2rsH02EHm-mZT-UgkNZxcPiJYVKnr/exec";
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const statusEl = document.getElementById("status");
+const infoEl = document.getElementById("info");
+const facePanel = document.getElementById("facePanel");
+
+let lastPersonCount = 0;
+let lastUpdate = 0;
+let lastCaptureTime = 0;
+let lastUploadTime = 0;
+let frameCount = 0;
+let lastFpsTime = performance.now();
+let fps = 0;
+
+// Start camera
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    statusEl.textContent = "✅ Camera Active";
+  } catch (err) {
+    statusEl.textContent = "❌ Camera access denied!";
+    console.error(err);
+  }
+}
+
+// Capture face locally
+function captureFace(pred) {
+  const now = Date.now();
+  if (now - lastCaptureTime < 2000) return;
+  lastCaptureTime = now;
+
+  const [x, y, w, h] = pred.bbox;
+  const faceCanvas = document.createElement('canvas');
+  faceCanvas.width = w;
+  faceCanvas.height = h;
+  const faceCtx = faceCanvas.getContext('2d');
+  faceCtx.drawImage(video, x, y, w, h, 0, 0, w, h);
+  const faceData = faceCanvas.toDataURL('image/jpeg');
+
+  let faces = JSON.parse(localStorage.getItem('capturedFaces') || '[]');
+  faces.unshift(faceData);
+  if (faces.length > 10) faces.pop();
+  localStorage.setItem('capturedFaces', JSON.stringify(faces));
+  updateFacePanel();
+
+  // Upload to Google Drive
+  uploadToDrive(faceData);
+}
+
+function updateFacePanel() {
+  const faces = JSON.parse(localStorage.getItem('capturedFaces') || '[]');
+  facePanel.innerHTML = '<h2>Captured Faces</h2>';
+  faces.forEach(f => {
+    const img = document.createElement('img');
+    img.src = f;
+    img.style.width = '100%';
+    img.style.marginBottom = '10px';
+    img.style.border = '2px solid #0ff';
+    img.style.borderRadius = '5px';
+    facePanel.appendChild(img);
+  });
+}
+
+async function uploadToDrive(base64Data) {
+  const cleanData = base64Data.split(',')[1]; // remove data:image/jpeg;base64,
+  try {
+    await fetch(DRIVE_UPLOAD_URL, { method: "POST", body: cleanData });
+    console.log("Uploaded to Drive");
+  } catch (err) {
+    console.error("Drive upload error:", err);
+  }
+}
+
+// Detection loop
+async function startDetection() {
+  const model = await cocoSsd.load();
+  statusEl.textContent = "Model Loaded - Detecting...";
+
+  async function detectFrame() {
+    if(video.readyState !== 4) { requestAnimationFrame(detectFrame); return; }
+    const predictions = await model.detect(video);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    let personCount = 0;
+    let avgScore = 0;
+
+    predictions.forEach(pred => {
+      if(pred.class === "person" && pred.score > 0.4) {
+        personCount++;
+        avgScore += pred.score;
+        const [x, y, w, h] = pred.bbox;
+        ctx.beginPath();
+        ctx.rect(x, y, w, h);
+        ctx.strokeStyle = "white";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.fillStyle = "white";
+        ctx.font = "16px Arial";
+        ctx.fillText(`Human ${Math.round(pred.score*100)}%`, x, y-5);
+
+        captureFace(pred);
+      }
+    });
+
+    frameCount++;
+    const now = performance.now();
+    if(now - lastFpsTime > 1000) { fps = frameCount; frameCount = 0; lastFpsTime = now; }
+
+    statusEl.textContent = personCount>0?"🟢 Human Detected":"🔴 No Human";
+    infoEl.innerHTML = `Count: ${personCount} | FPS: ${fps} | Avg Confidence: ${(avgScore/personCount*100 || 0).toFixed(1)}%`;
+
+    requestAnimationFrame(detectFrame);
+  }
+
+  detectFrame();
+}
+
+startCamera().then(startDetection);
+updateFacePanel();
+
+</script>
+
+<style>
+body { background:#000; color:#0ff; font-family:Orbitron,sans-serif; margin:0; display:flex;}
+#facePanel { width:25%; background:#111; padding:10px; overflow-y:auto;}
+#cameraPanel { width:75%; text-align:center; padding:10px;}
+h2 { color:#0ff; text-shadow:0 0 10px #0ff;}
+video, canvas { border:3px solid #0ff; border-radius:10px; width:90%; max-width:720px; margin-top:10px; box-shadow:0 0 20px cyan;}
+#status { margin-top:15px; font-size:18px; text-shadow:0 0 10px #0ff;}
+#info { margin-top:10px; font-size:16px; color:#8ff;}
+</style>
+
+</head>
+<body>
+<div id="facePanel">
+  <h2>Captured Faces</h2>
+</div>
+
+<div id="cameraPanel">
+  <h2>Human Detection</h2>
+  <video id="video" autoplay muted playsinline></video>
+  <canvas id="canvas"></canvas>
+  <div id="status">Initializing...</div>
+  <div id="info"></div>
+</div>
+</body>
+</html>
