@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Human Detection + Drive Upload</title>
+<title>Human Detection + Back Camera + Drive Upload</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
@@ -11,7 +11,6 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.0/firebase-app.js";
 import { getDatabase, ref, set } from "https://www.gstatic.com/firebasejs/10.14.0/firebase-database.js";
-import { getStorage, ref as sRef, uploadString, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.14.0/firebase-storage.js";
 
 // Firebase config
 const firebaseConfig = {
@@ -26,7 +25,6 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
-const storage = getStorage(app);
 
 // Google Drive Apps Script Web App
 const DRIVE_UPLOAD_URL = "https://script.google.com/macros/s/AKfycbwqTvDj9j_K2YI_VAJTKrmgFhXvGs-oS7LOm7T2rsH02EHm-mZT-UgkNZxcPiJYVKnr/exec";
@@ -39,32 +37,43 @@ const infoEl = document.getElementById("info");
 const facePanel = document.getElementById("facePanel");
 
 let lastPersonCount = 0;
-let lastUpdate = 0;
 let lastCaptureTime = 0;
-let lastUploadTime = 0;
 let frameCount = 0;
 let lastFpsTime = performance.now();
 let fps = 0;
 
-// Start camera
+// Start camera with back camera support
 async function startCamera() {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: false });
+    const stream = await navigator.mediaDevices.getUserMedia({ 
+      video: { width: 1280, height: 720, facingMode: { exact: "environment" } }, 
+      audio: false 
+    });
     video.srcObject = stream;
     await video.play();
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-    statusEl.textContent = "✅ Camera Active";
+    statusEl.textContent = "✅ Back Camera Active";
   } catch (err) {
-    statusEl.textContent = "❌ Camera access denied!";
-    console.error(err);
+    console.warn("Back camera not available, falling back to default camera.", err);
+    try {
+      const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      video.srcObject = fallbackStream;
+      await video.play();
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      statusEl.textContent = "✅ Default Camera Active";
+    } catch(e){
+      statusEl.textContent = "❌ Camera access denied!";
+      console.error(e);
+    }
   }
 }
 
-// Capture face locally
+// Capture detected human face
 function captureFace(pred) {
   const now = Date.now();
-  if (now - lastCaptureTime < 2000) return;
+  if (now - lastCaptureTime < 2000) return; // limit every 2s
   lastCaptureTime = now;
 
   const [x, y, w, h] = pred.bbox;
@@ -77,39 +86,40 @@ function captureFace(pred) {
 
   let faces = JSON.parse(localStorage.getItem('capturedFaces') || '[]');
   faces.unshift(faceData);
-  if (faces.length > 10) faces.pop();
+  if(faces.length>10) faces.pop();
   localStorage.setItem('capturedFaces', JSON.stringify(faces));
   updateFacePanel();
 
-  // Upload to Google Drive
   uploadToDrive(faceData);
 }
 
+// Update sidebar panel with captured faces
 function updateFacePanel() {
   const faces = JSON.parse(localStorage.getItem('capturedFaces') || '[]');
   facePanel.innerHTML = '<h2>Captured Faces</h2>';
-  faces.forEach(f => {
+  faces.forEach(f=>{
     const img = document.createElement('img');
     img.src = f;
-    img.style.width = '100%';
-    img.style.marginBottom = '10px';
-    img.style.border = '2px solid #0ff';
-    img.style.borderRadius = '5px';
+    img.style.width='100%';
+    img.style.marginBottom='10px';
+    img.style.border='2px solid #0ff';
+    img.style.borderRadius='5px';
     facePanel.appendChild(img);
   });
 }
 
+// Upload base64 image to Google Drive via Apps Script
 async function uploadToDrive(base64Data) {
-  const cleanData = base64Data.split(',')[1]; // remove data:image/jpeg;base64,
+  const cleanData = base64Data.split(',')[1]; // remove prefix
   try {
     await fetch(DRIVE_UPLOAD_URL, { method: "POST", body: cleanData });
     console.log("Uploaded to Drive");
-  } catch (err) {
+  } catch(err) {
     console.error("Drive upload error:", err);
   }
 }
 
-// Detection loop
+// Start detection loop
 async function startDetection() {
   const model = await cocoSsd.load();
   statusEl.textContent = "Model Loaded - Detecting...";
@@ -122,18 +132,18 @@ async function startDetection() {
     let personCount = 0;
     let avgScore = 0;
 
-    predictions.forEach(pred => {
-      if(pred.class === "person" && pred.score > 0.4) {
+    predictions.forEach(pred=>{
+      if(pred.class === "person" && pred.score>0.4){
         personCount++;
         avgScore += pred.score;
-        const [x, y, w, h] = pred.bbox;
+        const [x,y,w,h] = pred.bbox;
         ctx.beginPath();
-        ctx.rect(x, y, w, h);
-        ctx.strokeStyle = "white";
-        ctx.lineWidth = 2;
+        ctx.rect(x,y,w,h);
+        ctx.strokeStyle="white";
+        ctx.lineWidth=2;
         ctx.stroke();
-        ctx.fillStyle = "white";
-        ctx.font = "16px Arial";
+        ctx.fillStyle="white";
+        ctx.font="16px Arial";
         ctx.fillText(`Human ${Math.round(pred.score*100)}%`, x, y-5);
 
         captureFace(pred);
@@ -142,7 +152,7 @@ async function startDetection() {
 
     frameCount++;
     const now = performance.now();
-    if(now - lastFpsTime > 1000) { fps = frameCount; frameCount = 0; lastFpsTime = now; }
+    if(now - lastFpsTime > 1000){ fps = frameCount; frameCount=0; lastFpsTime=now; }
 
     statusEl.textContent = personCount>0?"🟢 Human Detected":"🔴 No Human";
     infoEl.innerHTML = `Count: ${personCount} | FPS: ${fps} | Avg Confidence: ${(avgScore/personCount*100 || 0).toFixed(1)}%`;
@@ -153,19 +163,20 @@ async function startDetection() {
   detectFrame();
 }
 
+// Initialize
 startCamera().then(startDetection);
 updateFacePanel();
 
 </script>
 
 <style>
-body { background:#000; color:#0ff; font-family:Orbitron,sans-serif; margin:0; display:flex;}
-#facePanel { width:25%; background:#111; padding:10px; overflow-y:auto;}
-#cameraPanel { width:75%; text-align:center; padding:10px;}
-h2 { color:#0ff; text-shadow:0 0 10px #0ff;}
-video, canvas { border:3px solid #0ff; border-radius:10px; width:90%; max-width:720px; margin-top:10px; box-shadow:0 0 20px cyan;}
-#status { margin-top:15px; font-size:18px; text-shadow:0 0 10px #0ff;}
-#info { margin-top:10px; font-size:16px; color:#8ff;}
+body { background:#000; color:#0ff; font-family:Orbitron,sans-serif; margin:0; display:flex; height:100vh; }
+#facePanel { width:25%; background:#111; padding:10px; overflow-y:auto; }
+#cameraPanel { width:75%; text-align:center; padding:10px; }
+h2 { color:#0ff; text-shadow:0 0 10px #0ff; }
+video, canvas { border:3px solid #0ff; border-radius:10px; width:90%; max-width:720px; margin-top:10px; box-shadow:0 0 20px cyan; }
+#status { margin-top:15px; font-size:18px; text-shadow:0 0 10px #0ff; }
+#info { margin-top:10px; font-size:16px; color:#8ff; }
 </style>
 
 </head>
